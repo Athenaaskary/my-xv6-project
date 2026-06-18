@@ -125,6 +125,7 @@ found:
   p->pid = allocpid();
   p->state = USED;
   p->priority = 50;
+  p->tickets = 1;
 
   // Allocate a trapframe page.
   if ((p->trapframe = (struct trapframe *)kalloc()) == 0) {
@@ -268,6 +269,8 @@ kfork(void)
   if ((np = allocproc()) == 0) {
     return -1;
   }
+
+  np->tickets = p->tickets;
 
   // Copy user memory from parent to child.
   if (uvmcopy(p->pagetable, np->pagetable, p->sz) < 0) {
@@ -422,49 +425,108 @@ kwait(uint64 addr)
 //  - swtch to start running that process.
 //  - eventually that process transfers control
 //    via swtch back to the scheduler.
+
+// یک پیاده‌سازی ساده LCG برای هسته
+static unsigned long next = 1;
+
+void
+srand(unsigned int seed)
+{
+  next = seed;
+}
+
+int
+rand(void)
+{
+  next = next * 1103515245 + 12345;
+  return (unsigned int)(next / 65536) % 32768;
+}
+
+
 void
 scheduler(void)
 {
   struct proc *p;
   struct cpu *c = mycpu();
-
   c->proc = 0;
-  for(;;){
 
+  for(;;){
     intr_on();
 
-    struct proc *best_p = 0;
+    #ifdef LOTTERY
+      // منطق Lottery Scheduling
+      int total_tickets = 0;
+      for(p = proc; p < &proc[NPROC]; p++) {
+        acquire(&p->lock);
+        if(p->state == RUNNABLE) total_tickets += p->tickets;
+        release(&p->lock);
+      }
 
+      if(total_tickets > 0) {
+        int draw = rand() % total_tickets;
+        int current_sum = 0;
+        for(p = proc; p < &proc[NPROC]; p++) {
+          acquire(&p->lock);
+          if(p->state == RUNNABLE) {
+            current_sum += p->tickets;
+            if(current_sum > draw) {
+              p->state = RUNNING;
+              c->proc = p;
+              swtch(&c->context, &p->context);
+              c->proc = 0;
+              release(&p->lock);
+              break;
+            }
+          }
+          release(&p->lock);
+        }
+      } else {
+        asm volatile("wfi");
+      }
 
-    for(p = proc; p < &proc[NPROC]; p++) {
-      acquire(&p->lock);
-      if(p->state == RUNNABLE) {
+    #elif defined(PRIORITY)
+      // کد زمان‌بند اولویتی شما
+      struct proc *best_p = 0;
+      for(p = proc; p < &proc[NPROC]; p++) {
+        acquire(&p->lock);
+        if(p->state == RUNNABLE) {
+          if(best_p == 0 || p->priority < best_p->priority) {
+            if(best_p) release(&best_p->lock);
+            best_p = p;
+            continue;
+          }
+        }
+        release(&p->lock);
+      }
 
-        if(best_p == 0 || p->priority < best_p->priority) {
-          if(best_p) release(&best_p->lock);
-          best_p = p;
-          continue;
+      if(best_p) {
+        best_p->state = RUNNING;
+        c->proc = best_p;
+        swtch(&c->context, &best_p->context);
+        c->proc = 0;
+        release(&best_p->lock);
+      } else {
+        asm volatile("wfi");
+      }
+
+    #else
+      // پیش‌فرض: Round Robin
+      for(p = proc; p < &proc[NPROC]; p++) {
+        acquire(&p->lock);
+        if(p->state == RUNNABLE) {
+          p->state = RUNNING;
+          c->proc = p;
+          swtch(&c->context, &p->context);
+          c->proc = 0;
+          release(&p->lock);
+        } else {
+          release(&p->lock);
         }
       }
-      release(&p->lock);
-    }
-
-    if(best_p) {
-
-      best_p->state = RUNNING;
-      c->proc = best_p;
-      swtch(&c->context, &best_p->context);
-
-
-      c->proc = 0;
-      release(&best_p->lock);
-    } else {
-
       asm volatile("wfi");
-    }
+    #endif
   }
 }
-
 
 void
 sched(void)

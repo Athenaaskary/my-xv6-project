@@ -171,3 +171,20 @@ sys_setpriority(void)
   }
   return -1;
 }
+
+uint64
+sys_settickets(void)
+{
+  int n;
+
+  argint(0, &n);
+
+  if(n < 1)
+    return -1;
+
+  struct proc *p = myproc();
+  acquire(&p->lock);
+  p->tickets = n;
+  release(&p->lock);
+  return 0;
+}
