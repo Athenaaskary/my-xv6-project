@@ -141,3 +141,33 @@ sys_getpinfo(void)
   }
   return count;
 }
+
+
+
+extern struct proc proc[];
+
+uint64
+sys_setpriority(void)
+{
+  int pid, priority;
+  struct proc *p;
+
+  // فراخوانی جداگانه
+  argint(0, &pid);
+  argint(1, &priority);
+
+  // بررسی محدوده‌ی اولویت
+  if(priority < 0 || priority > 100)
+    return -1;
+
+  for(p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if(p->pid == pid) {
+      p->priority = priority;
+      release(&p->lock);
+      return 0;
+    }
+    release(&p->lock);
+  }
+  return -1;
+}

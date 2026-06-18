@@ -26,6 +26,7 @@ int chdir(const char *);
 int dup(int);
 int getpid(void);
 int getpinfo(struct pinfo*);
+int setpriority(int pid, int priority);
 char *sys_sbrk(int, int);
 int pause(int);
 int uptime(void);
