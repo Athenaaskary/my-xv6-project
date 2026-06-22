@@ -170,6 +170,8 @@ freeproc(struct proc *p)
   p->chan = 0;
   p->killed = 0;
   p->xstate = 0;
+  p->priority = 50;
+  p->tickets = 1;
   p->state = UNUSED;
 }
 
@@ -426,22 +428,14 @@ kwait(uint64 addr)
 //  - eventually that process transfers control
 //    via swtch back to the scheduler.
 
-// یک پیاده‌سازی ساده LCG برای هسته
-static unsigned long next = 1;
-
-void
-srand(unsigned int seed)
+#ifdef LOTTERY
+static uint
+lcg_next(uint *state)
 {
-  next = seed;
+  *state = *state * 1664525U + 1013904223U;
+  return *state;
 }
-
-int
-rand(void)
-{
-  next = next * 1103515245 + 12345;
-  return (unsigned int)(next / 65536) % 32768;
-}
-
+#endif
 
 void
 scheduler(void)
@@ -450,81 +444,108 @@ scheduler(void)
   struct cpu *c = mycpu();
   c->proc = 0;
 
-  for(;;){
+#ifdef LOTTERY
+  uint rng_state;
+  acquire(&tickslock);
+  rng_state = ticks ^ (uint)((c - cpus + 1) * 2654435761U);
+  release(&tickslock);
+  if(rng_state == 0)
+    rng_state = 1;
+#elif defined(PRIORITY)
+  int priority_cursor = 0;
+#endif
+
+  for(;;) {
     intr_on();
+    intr_off();
 
-    #ifdef LOTTERY
-      // منطق Lottery Scheduling
-      int total_tickets = 0;
-      for(p = proc; p < &proc[NPROC]; p++) {
-        acquire(&p->lock);
-        if(p->state == RUNNABLE) total_tickets += p->tickets;
-        release(&p->lock);
-      }
+#ifdef LOTTERY
+    uint64 total_tickets = 0;
+    int found = 0;
 
-      if(total_tickets > 0) {
-        int draw = rand() % total_tickets;
-        int current_sum = 0;
-        for(p = proc; p < &proc[NPROC]; p++) {
-          acquire(&p->lock);
-          if(p->state == RUNNABLE) {
-            current_sum += p->tickets;
-            if(current_sum > draw) {
-              p->state = RUNNING;
-              c->proc = p;
-              swtch(&c->context, &p->context);
-              c->proc = 0;
-              release(&p->lock);
-              break;
-            }
-          }
-          release(&p->lock);
-        }
-      } else {
-        asm volatile("wfi");
-      }
+    for(p = proc; p < &proc[NPROC]; p++) {
+      acquire(&p->lock);
+      if(p->state == RUNNABLE)
+        total_tickets += p->tickets;
+      release(&p->lock);
+    }
 
-    #elif defined(PRIORITY)
-      // کد زمان‌بند اولویتی شما
-      struct proc *best_p = 0;
+    if(total_tickets > 0) {
+      uint64 winner = lcg_next(&rng_state) % total_tickets;
+      uint64 running_total = 0;
+
       for(p = proc; p < &proc[NPROC]; p++) {
         acquire(&p->lock);
         if(p->state == RUNNABLE) {
-          if(best_p == 0 || p->priority < best_p->priority) {
-            if(best_p) release(&best_p->lock);
-            best_p = p;
-            continue;
+          running_total += p->tickets;
+          if(running_total > winner) {
+            p->state = RUNNING;
+            c->proc = p;
+            swtch(&c->context, &p->context);
+            c->proc = 0;
+            found = 1;
+            release(&p->lock);
+            break;
           }
         }
         release(&p->lock);
       }
+    }
 
-      if(best_p) {
-        best_p->state = RUNNING;
-        c->proc = best_p;
-        swtch(&c->context, &best_p->context);
-        c->proc = 0;
-        release(&best_p->lock);
-      } else {
-        asm volatile("wfi");
-      }
+    if(found == 0)
+      asm volatile("wfi");
 
-    #else
-      // پیش‌فرض: Round Robin
-      for(p = proc; p < &proc[NPROC]; p++) {
+#elif defined(PRIORITY)
+    int best_priority = 101;
+    int found = 0;
+
+    for(p = proc; p < &proc[NPROC]; p++) {
+      acquire(&p->lock);
+      if(p->state == RUNNABLE && p->priority < best_priority)
+        best_priority = p->priority;
+      release(&p->lock);
+    }
+
+    if(best_priority <= 100) {
+      for(int offset = 0; offset < NPROC; offset++) {
+        int index = (priority_cursor + offset) % NPROC;
+        p = &proc[index];
         acquire(&p->lock);
-        if(p->state == RUNNABLE) {
+        if(p->state == RUNNABLE && p->priority == best_priority) {
+          priority_cursor = (index + 1) % NPROC;
           p->state = RUNNING;
           c->proc = p;
           swtch(&c->context, &p->context);
           c->proc = 0;
+          found = 1;
           release(&p->lock);
-        } else {
-          release(&p->lock);
+          break;
         }
+        release(&p->lock);
       }
+    }
+
+    if(found == 0)
       asm volatile("wfi");
-    #endif
+
+#else
+    int found = 0;
+
+    for(p = proc; p < &proc[NPROC]; p++) {
+      acquire(&p->lock);
+      if(p->state == RUNNABLE) {
+        p->state = RUNNING;
+        c->proc = p;
+        swtch(&c->context, &p->context);
+        c->proc = 0;
+        found = 1;
+      }
+      release(&p->lock);
+    }
+
+    if(found == 0)
+      asm volatile("wfi");
+#endif
   }
 }
 

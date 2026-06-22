@@ -5,7 +5,7 @@ struct pinfo {
     int pid;
     int pstate;
     int priority;
-    uint64 tickets;
+    int tickets;
     char name[16];
 };
 

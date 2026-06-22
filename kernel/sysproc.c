@@ -110,16 +110,16 @@ sys_uptime(void)
   return xticks;
 }
 
+extern struct proc proc[];
 
 uint64
 sys_getpinfo(void)
 {
-  struct pinfo *up;
+  uint64 user_addr;
   struct proc *p;
-  extern struct proc proc[];
   int count = 0;
 
-  argaddr(0, (uint64*)&up);
+  argaddr(0, &user_addr);
 
   for(p = proc; p < &proc[NPROC]; p++) {
     acquire(&p->lock);
@@ -127,11 +127,13 @@ sys_getpinfo(void)
       struct pinfo info;
       info.pid = p->pid;
       info.pstate = p->state;
-      info.priority = 0;
-      info.tickets = 0;
+      info.priority = p->priority;
+      info.tickets = p->tickets;
       safestrcpy(info.name, p->name, sizeof(info.name));
 
-      if(copyout(myproc()->pagetable, (uint64)(up + count), (char*)&info, sizeof(info)) < 0) {
+      if(copyout(myproc()->pagetable,
+                 user_addr + count * sizeof(struct pinfo),
+                 (char*)&info, sizeof(info)) < 0) {
         release(&p->lock);
         return -1;
       }
@@ -141,28 +143,21 @@ sys_getpinfo(void)
   }
   return count;
 }
-
-
-
-extern struct proc proc[];
-
 uint64
 sys_setpriority(void)
 {
   int pid, priority;
   struct proc *p;
 
-  // فراخوانی جداگانه
   argint(0, &pid);
   argint(1, &priority);
 
-  // بررسی محدوده‌ی اولویت
   if(priority < 0 || priority > 100)
     return -1;
 
   for(p = proc; p < &proc[NPROC]; p++) {
     acquire(&p->lock);
-    if(p->pid == pid) {
+    if(p->state != UNUSED && p->pid == pid) {
       p->priority = priority;
       release(&p->lock);
       return 0;
